@@ -1,0 +1,6 @@
+{
+  "name": "Thessla AirPack card",
+  "filename": "thessla-airpack-card.js",
+  "render_readme": true,
+  "homeassistant": "2024.1.0"
+}

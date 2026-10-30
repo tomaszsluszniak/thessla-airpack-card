@@ -1,0 +1,24 @@
+name: Release
+
+# Push a tag like v2.2.0 to publish a release HACS can install.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that the card version matches the tag
+        run: |
+          grep -q "const CARD_VERSION = \"${GITHUB_REF_NAME#v}\"" dist/thessla-airpack-card.js \
+            || { echo "CARD_VERSION in dist/thessla-airpack-card.js does not match ${GITHUB_REF_NAME}"; exit 1; }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/thessla-airpack-card.js
+          generate_release_notes: true
