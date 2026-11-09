@@ -65,7 +65,7 @@ przypisz ją ręcznie w `entities`.
 
 `mode`, `season`, `special`, `comfort`, `intensity`, `intensity_now`, `setpoint`, `power`, `outside`, `supply`,
 `extract`, `fpx_temp`, `ambient`, `supply_flow`, `extract_flow`, `supply_percent`, `extract_percent`,
-`filter_supply`, `filter_extract`, `alarm_s`, `alarm_e`, `bypass`, `gwc`, `fpx`, `erv`, `hood`, `humidistat`,
+`supply_voltage`, `extract_voltage`, `filter_supply`, `filter_extract`, `alarm_s`, `alarm_e`, `bypass`, `gwc`, `fpx`, `erv`, `hood`, `humidistat`,
 `air_quality`, `online`, `clock`, `comfort_status`.
 
 </details>

@@ -7,7 +7,7 @@
  * Not affiliated with Thessla Green; no manufacturer logo, wordmark or artwork is used.
  */
 
-const CARD_VERSION = "2.2.1";
+const CARD_VERSION = "2.3.0";
 
 // key: [domains, candidate entity names (friendly-name suffixes)]
 const ENTITY_KEYS = {
@@ -28,6 +28,8 @@ const ENTITY_KEYS = {
   extract_flow: [["sensor"], ["Strumień wywiewu", "Wartość chwilowa strumienia powietrza - wywiew"]],
   supply_percent: [["sensor"], ["Intensywność nawiewu", "Zadana intensywność wentylacji (nawiew)"]],
   extract_percent: [["sensor"], ["Intensywność wywiewu", "Zadana intensywność wentylacji (wywiew)"]],
+  supply_voltage: [["sensor"], ["Napięcie wentylatora nawiewu"]],
+  extract_voltage: [["sensor"], ["Napięcie wentylatora wywiewu"]],
   filter_supply: [["sensor"], ["Zużycie filtra nawiewnego", "Stopień zużycia filtra nawiewnego"]],
   filter_extract: [["sensor"], ["Zużycie filtra wywiewnego", "Stopień zużycia filtra wywiewnego"]],
   alarm_s: [["binary_sensor"], ["Alarm S"]],
@@ -73,6 +75,8 @@ const READINGS = [
   { key: "ambient", label: "Temperatura otoczenia", code: "TO" },
   { key: "supply_flow", label: "Strumień nawiewu", code: "" },
   { key: "extract_flow", label: "Strumień wywiewu", code: "" },
+  { key: "supply_voltage", label: "Napięcie wentylatora nawiewu", code: "" },
+  { key: "extract_voltage", label: "Napięcie wentylatora wywiewu", code: "" },
 ];
 
 const WEEKDAYS = ["Niedziela", "Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota"];
@@ -588,7 +592,7 @@ class ThesslaAirpackCard extends HTMLElement {
         .map((r) => {
           const st = this._st(r.key);
           const unit = st && st.attributes.unit_of_measurement ? st.attributes.unit_of_measurement : "";
-          const v = this._value(r.key, /m³|m3/.test(unit) ? 0 : 1);
+          const v = this._value(r.key, /m³|m3/.test(unit) ? 0 : unit === "V" ? 2 : 1);
           return `<button class="row" data-action="more" data-arg="${r.key}">
               <span>${r.label}${r.code ? ` <small>${r.code}</small>` : ""}</span><b>${v ?? "–"} ${esc(unit)}</b></button>`;
         })
