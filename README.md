@@ -59,6 +59,7 @@ przypisz ją ręcznie w `entities`.
 | `entities` | wykrywane | ręczne przypisanie encji, np. `mode: select.airpack4_tryb_pracy` |
 | `step` | `5` | krok przycisków −/+ (w %) |
 | `functions` | `[airing, empty, windows, fireplace]` | funkcje w dolnym rzędzie |
+| `schedule_temperature` | `false` | pokaż temperaturę nawiewu w odcinkach harmonogramu (tylko z nagrzewnicą lub chłodnicą kanałową) |
 
 <details>
 <summary>Klucze <code>entities</code></summary>
@@ -66,7 +67,7 @@ przypisz ją ręcznie w `entities`.
 `mode`, `season`, `special`, `comfort`, `intensity`, `intensity_now`, `setpoint`, `power`, `outside`, `supply`,
 `extract`, `fpx_temp`, `ambient`, `supply_flow`, `extract_flow`, `supply_percent`, `extract_percent`,
 `supply_voltage`, `extract_voltage`, `filter_supply`, `filter_extract`, `alarm_s`, `alarm_e`, `bypass`, `gwc`, `fpx`, `erv`, `hood`, `humidistat`,
-`air_quality`, `online`, `clock`, `comfort_status`.
+`air_quality`, `online`, `clock`, `comfort_status`, `schedule_summer`, `schedule_winter`, `schedule_command`.
 
 </details>
 
@@ -80,6 +81,10 @@ przypisz ją ręcznie w `entities`.
 - **Zużycie filtrów**: dotknięcie otwiera schemat przepływu z temperaturami, zużyciem filtrów,
   intensywnością i przepływem wentylatorów oraz sprawnością odzysku ciepła.
 - **Koło zębate**: wszystkie odczyty i wyłącznik centrali (wyłączenie wymaga drugiego dotknięcia).
+- **Harmonogram trybu AUTO** (w odczytach): jak w panelu Air++ – sezon Lato/Zima, dzień, do 4 odcinków
+  z godziną startu i intensywnością oraz godzina wietrzenia. Zaznaczenie kilku dni zapisuje na nie ten sam plan.
+  Wymaga esphome-thessla-airpack 1.2.0 lub nowszego z encjami `schedule_summer`, `schedule_winter`
+  i `schedule_command`.
 - U góry pojawiają się kody aktywnych stanów: BP, GWC, FPX, ERV, OKAP, H2O, JP oraz alarmy S i E.
 
 ![Schemat przepływu powietrza: praca normalna i otwarty bypass](docs/schemat-przeplywu.png)

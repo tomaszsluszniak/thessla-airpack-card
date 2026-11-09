@@ -7,7 +7,7 @@
  * Not affiliated with Thessla Green; no manufacturer logo, wordmark or artwork is used.
  */
 
-const CARD_VERSION = "2.3.0";
+const CARD_VERSION = "2.4.0";
 
 // key: [domains, candidate entity names (friendly-name suffixes)]
 const ENTITY_KEYS = {
@@ -44,7 +44,17 @@ const ENTITY_KEYS = {
   online: [["binary_sensor"], ["Połączenie z centralą", "Status"]],
   clock: [["text_sensor", "sensor"], ["Zegar centrali"]],
   comfort_status: [["sensor"], ["Status KOMFORT"]],
+  schedule_summer: [["text_sensor"], ["Harmonogram lato"]],
+  schedule_winter: [["text_sensor"], ["Harmonogram zima"]],
+  schedule_command: [["text"], ["Harmonogram – zapis", "Harmonogram - zapis"]],
 };
+
+// Weekly AUTO schedule as published by esphome-thessla-airpack: per day 9 registers in hex
+// (4 slot starts [GGMM], 4 settings [AATT], airing start [GGMM]), Monday first.
+const SCHEDULE_DAYS = ["Pn", "Wt", "Śr", "Cz", "Pt", "So", "Nd"];
+const SLOT_OFF = 0xa200;
+const AIRING_OFF = 0x2400;
+const bcdTime = (v) => `${(v >> 12) & 15}${(v >> 8) & 15}:${(v >> 4) & 15}${v & 15}`;
 
 // Special functions, matched against the select's options. Shown in this order when available.
 const SPECIALS = [
@@ -99,10 +109,12 @@ class ThesslaAirpackCard extends HTMLElement {
     this._config = { step: 5, functions: DEFAULT_FUNCTIONS, ...config };
     this._entities = null;
     this._pending = null;
-    this._view = null; // null | "intensity" | "temperature" | "settings"
+    this._view = null; // null | "intensity" | "temperature" | "settings" | "flow" | "schedule"
+    this._sch = null;
     if (!this.shadowRoot) {
       this.attachShadow({ mode: "open" });
       this.shadowRoot.addEventListener("click", (ev) => this._onClick(ev));
+      this.shadowRoot.addEventListener("change", (ev) => this._onScheduleInput(ev));
     }
   }
 
@@ -131,7 +143,19 @@ class ThesslaAirpackCard extends HTMLElement {
       const real = id && hass.states[id];
       if (!real || real.state === exp.value || Date.now() > exp.until) delete this._expect[key];
     }
-    const sig = Object.values(this._entities || {})
+    if (this._view === "schedule") {
+      // Re-rendering replaces the inputs being edited: only follow the schedule entities here.
+      const ssig = ["schedule_summer", "schedule_winter", "schedule_command"]
+        .map((k) => (this._st(k) || {}).state)
+        .join("|");
+      if (ssig !== this._ssig) {
+        this._ssig = ssig;
+        this._render();
+      }
+      this._sig = null;
+      return;
+    }
+    const sig =Object.values(this._entities || {})
       .map((id) => {
         const st = hass.states[id];
         return st ? `${st.state}|${st.attributes.options ? st.attributes.options.length : ""}` : "-";
@@ -374,12 +398,207 @@ class ThesslaAirpackCard extends HTMLElement {
   _armViewTimer() {
     // Like the panel: adjustment screens fall back to the main screen when left alone.
     clearTimeout(this._viewTimer);
-    if (this._view)
-      this._viewTimer = setTimeout(() => {
-        this._view = null;
-        this._confirmOff = false;
-        this._render();
-      }, this._view === "settings" || this._view === "flow" ? 60000 : 8000);
+    if (!this._view) return;
+    const ms = { settings: 60000, flow: 60000, schedule: 180000 }[this._view] || 8000;
+    this._viewTimer = setTimeout(() => {
+      if (this._view === "schedule" && this._sch && this._sch.dirty) {
+        this._armViewTimer(); // never drop unsaved changes
+        return;
+      }
+      this._view = null;
+      this._confirmOff = false;
+      this._render();
+    }, ms);
+  }
+
+  // ------------------------------------------------------------------ weekly schedule
+  _scheduleRaw(season) {
+    const st = this._st(season ? "schedule_winter" : "schedule_summer");
+    if (unavailable(st)) return null;
+    const s = st.state.trim();
+    return /^[0-9A-F]{252}$/i.test(s) ? s : null;
+  }
+
+  _scheduleDay(raw, day) {
+    const r = [];
+    for (let i = 0; i < 9; i++) r.push(parseInt(raw.substr(day * 36 + i * 4, 4), 16));
+    const slots = [];
+    for (let k = 0; k < 4; k++) {
+      if (r[k] === SLOT_OFF) continue;
+      slots.push({ start: bcdTime(r[k]), pct: r[4 + k] >> 8, temp: (r[4 + k] & 0xff) / 2 });
+    }
+    return { slots, airing: r[8] === AIRING_OFF ? null : bcdTime(r[8]) };
+  }
+
+  _scheduleOpen() {
+    const winter = /zim/i.test((this._st("season") || {}).state || "");
+    const today = (new Date().getDay() + 6) % 7; // Monday = 0
+    this._sch = { season: winter ? 1 : 0, days: [today], draft: null, dirty: false, sent: null, error: null };
+    this._ssig = null;
+    this._openView("schedule");
+  }
+
+  // Returns an error text, or null when the draft can be written.
+  _scheduleCheck(draft, withTemp) {
+    if (!draft.slots.length) return "Potrzebny co najmniej jeden odcinek.";
+    const times = draft.slots.map((s) => s.start);
+    if (times.some((t) => !/^\d\d:\d\d$/.test(t))) return "Uzupełnij godziny odcinków.";
+    if (new Set(times).size !== times.length) return "Dwa odcinki zaczynają się o tej samej godzinie.";
+    for (const s of draft.slots) {
+      if (!Number.isInteger(s.pct) || s.pct < 10 || s.pct > 100) return "Intensywność musi mieścić się w 10–100%.";
+      if (withTemp && !(s.temp >= 10 && s.temp <= 45 && Number.isInteger(s.temp * 2)))
+        return "Temperatura musi mieścić się w 10–45 °C co 0,5.";
+    }
+    if (draft.airing !== null && !/^\d\d:\d\d$/.test(draft.airing)) return "Uzupełnij godzinę wietrzenia.";
+    return null;
+  }
+
+  _scheduleSave() {
+    const sch = this._sch;
+    const withTemp = !!this._config.schedule_temperature;
+    const error = this._scheduleCheck(sch.draft, withTemp);
+    sch.error = error;
+    if (error || !this._entities.schedule_command) {
+      this._render();
+      return;
+    }
+    const slots = [...sch.draft.slots].sort((a, b) => a.start.localeCompare(b.start));
+    const tokens = slots.map((s) => (withTemp ? `${s.start}/${s.pct}/${s.temp}` : `${s.start}/${s.pct}`));
+    while (tokens.length < 4) tokens.push("-");
+    const days = [...sch.days].sort().map((d) => d + 1).join("");
+    const command = `${sch.season ? "Z" : "L"}${days} ${tokens.join(" ")} ${sch.draft.airing || "-"}`;
+    sch.draft.slots = slots;
+    sch.sent = command;
+    this._render();
+    this._call("text", "set_value", { entity_id: this._entities.schedule_command, value: command });
+  }
+
+  _scheduleAction(action, arg) {
+    const sch = this._sch;
+    if (!sch) return;
+    const draft = sch.draft;
+    switch (action) {
+      case "sch-season":
+        sch.season = Number(arg);
+        sch.dirty = sch.done = sch.confirmClose = false;
+        sch.sent = sch.error = null;
+        break;
+      case "sch-day": {
+        const d = Number(arg);
+        const i = sch.days.indexOf(d);
+        if (i >= 0 && sch.days.length > 1) sch.days.splice(i, 1);
+        else if (i < 0) sch.days.push(d);
+        break;
+      }
+      case "sch-add": {
+        if (!draft || draft.slots.length >= 4) return;
+        const last = draft.slots[draft.slots.length - 1];
+        const hour = last ? Math.min(23, Number(last.start.slice(0, 2)) + 2) : 6;
+        draft.slots.push({ start: `${String(hour).padStart(2, "0")}:00`, pct: 30, temp: last ? last.temp : 22 });
+        sch.dirty = true;
+        break;
+      }
+      case "sch-del":
+        if (!draft || draft.slots.length < 2) return;
+        draft.slots.splice(Number(arg), 1);
+        sch.dirty = true;
+        break;
+      case "sch-reset":
+        sch.dirty = sch.done = sch.confirmClose = false;
+        sch.sent = sch.error = null;
+        break;
+      case "sch-save":
+        this._scheduleSave();
+        return;
+    }
+    if (sch.dirty) {
+      sch.sent = null;
+      sch.done = sch.confirmClose = false;
+    }
+    this._render();
+  }
+
+  _onScheduleInput(ev) {
+    const el = ev.target;
+    const field = el.dataset && el.dataset.sch;
+    const sch = this._sch;
+    if (!field || !sch || !sch.draft) return;
+    const slot = sch.draft.slots[Number(el.dataset.i)];
+    if (field === "start" && slot) slot.start = el.value.slice(0, 5);
+    else if (field === "pct" && slot) slot.pct = Math.round(num(el.value) ?? slot.pct);
+    else if (field === "temp" && slot) slot.temp = num(el.value) ?? slot.temp;
+    else if (field === "airing-on") sch.draft.airing = el.checked ? "17:45" : null;
+    else if (field === "airing") sch.draft.airing = el.value.slice(0, 5) || null;
+    sch.dirty = true;
+    sch.sent = sch.error = null;
+    sch.done = sch.confirmClose = false;
+    this._armViewTimer();
+    this._render();
+  }
+
+  _scheduleScreen(fresh) {
+    const sch = this._sch;
+    const raw = this._scheduleRaw(sch.season);
+    const withTemp = !!this._config.schedule_temperature;
+    const canWrite = !!this._entities.schedule_command;
+    const cmdSt = this._st("schedule_command");
+    if (sch.sent && cmdSt && cmdSt.state === `OK: ${sch.sent}`) {
+      sch.dirty = false; // the component mirrors the write at once; show what the unit holds
+      sch.done = true;
+      sch.sent = null;
+    }
+    if (!sch.dirty) sch.draft = raw ? this._scheduleDay(raw, Math.min(...sch.days)) : null;
+
+    const seasons = ["Lato", "Zima"]
+      .map((label, i) => `<button class="fn${sch.season === i ? " active" : ""}" data-action="sch-season" data-arg="${i}"
+          aria-pressed="${sch.season === i}">${label}</button>`)
+      .join("");
+    const days = SCHEDULE_DAYS.map((d, i) => `<button class="chip${sch.days.includes(i) ? " on" : ""}" data-action="sch-day"
+        data-arg="${i}" aria-pressed="${sch.days.includes(i)}">${d}</button>`).join("");
+
+    let body;
+    if (!sch.draft) {
+      body = `<div class="hint s-empty">Brak danych harmonogramu. Potrzebne są encje „Harmonogram lato” i „Harmonogram zima”
+        z esphome-thessla-airpack 1.2.0 lub nowszego.</div>`;
+    } else {
+      const d = sch.draft;
+      const rows = d.slots.map((s, i) => `<div class="s-row">
+          <input type="time" step="60" value="${esc(s.start)}" data-sch="start" data-i="${i}" aria-label="Początek odcinka ${i + 1}">
+          <label class="s-num"><input type="number" min="10" max="100" step="1" inputmode="numeric" value="${s.pct}"
+            data-sch="pct" data-i="${i}" aria-label="Intensywność odcinka ${i + 1}">%</label>
+          ${withTemp ? `<label class="s-num"><input type="number" min="10" max="45" step="0.5" inputmode="decimal" value="${s.temp}"
+            data-sch="temp" data-i="${i}" aria-label="Temperatura nawiewu odcinka ${i + 1}">°C</label>` : ""}
+          ${canWrite && d.slots.length > 1 ? `<button class="s-del" data-action="sch-del" data-arg="${i}" aria-label="Usuń odcinek ${i + 1}">
+            <ha-icon icon="mdi:close"></ha-icon></button>` : `<span></span>`}
+        </div>`).join("");
+      const airing = `<div class="s-row s-air">
+          <label class="s-check"><input type="checkbox" data-sch="airing-on" ${d.airing ? "checked" : ""}> Wietrzenie</label>
+          ${d.airing ? `<input type="time" step="60" value="${esc(d.airing)}" data-sch="airing" aria-label="Godzina wietrzenia">` : ""}
+        </div>`;
+      let status = "";
+      if (sch.error) status = `<span class="s-error">${esc(sch.error)}</span>`;
+      else if (sch.sent && cmdSt && /^Błąd/.test(cmdSt.state)) status = `<span class="s-error">${esc(cmdSt.state)}</span>`;
+      else if (sch.sent) status = "Zapisuję…";
+      else if (sch.dirty && sch.days.length > 1) status = `Zapis obejmie ${sch.days.length} zaznaczone dni.`;
+      else if (sch.dirty) status = "Niezapisane zmiany.";
+      else if (sch.done) status = "Zapisano.";
+      else if (sch.days.length > 1) status = "Pokazany pierwszy zaznaczony dzień.";
+      body = `<div class="s-list${canWrite ? "" : " readonly"}">${rows}
+          ${canWrite && d.slots.length < 4 ? `<button class="s-add" data-action="sch-add">+ Dodaj odcinek</button>` : ""}
+          ${airing}</div>
+        <div class="hint s-status">${status}</div>
+        ${canWrite ? `<div class="s-actions">
+            <button class="s-btn" data-action="sch-reset" ${sch.dirty ? "" : "disabled"}>Cofnij</button>
+            <button class="s-btn primary" data-action="sch-save" ${sch.dirty && !sch.sent ? "" : "disabled"}>Zapisz</button>
+          </div>` : `<div class="hint">Brak encji „Harmonogram – zapis”: podgląd bez możliwości zmian.</div>`}`;
+    }
+    return `<div class="overlay schedule${fresh}">
+        <div class="o-head"><span>Harmonogram</span><button class="close" data-action="close" aria-label="Wróć">
+          <ha-icon icon="mdi:close"></ha-icon></button></div>
+        <nav class="s-seasons">${seasons}</nav>
+        <div class="s-days">${days}</div>
+        ${body}
+      </div>`;
   }
 
   _onClick(ev) {
@@ -394,9 +613,28 @@ class ThesslaAirpackCard extends HTMLElement {
           return;
         }
         if (arg === "intensity" && unavailable(this._st("intensity"))) return;
+        if (arg === "schedule") {
+          this._scheduleOpen();
+          return;
+        }
         this._openView(arg);
         break;
+      case "sch-season":
+      case "sch-day":
+      case "sch-add":
+      case "sch-del":
+      case "sch-reset":
+      case "sch-save":
+        this._scheduleAction(action, arg);
+        break;
       case "close":
+        if (this._view === "schedule" && this._sch && this._sch.dirty && !this._sch.confirmClose) {
+          this._sch.confirmClose = true;
+          this._sch.error = "Niezapisane zmiany – dotknij ✕ ponownie, aby je porzucić.";
+          this._render();
+          return;
+        }
+        this._sch = null;
         this._view = null;
         this._confirmOff = false;
         clearTimeout(this._viewTimer);
@@ -587,6 +825,8 @@ class ThesslaAirpackCard extends HTMLElement {
         "Nastawa trybu KOMFORT", "");
     } else if (this._view === "flow") {
       overlay = this._flowScreen(fresh);
+    } else if (this._view === "schedule" && this._sch) {
+      overlay = this._scheduleScreen(fresh);
     } else if (this._view === "settings") {
       const rows = READINGS.filter((r) => e[r.key])
         .map((r) => {
@@ -597,10 +837,14 @@ class ThesslaAirpackCard extends HTMLElement {
               <span>${r.label}${r.code ? ` <small>${r.code}</small>` : ""}</span><b>${v ?? "–"} ${esc(unit)}</b></button>`;
         })
         .join("");
+      const scheduleRow = e.schedule_summer || e.schedule_winter
+        ? `<button class="row" data-action="open" data-arg="schedule"><span>Harmonogram trybu AUTO</span>
+            <ha-icon icon="mdi:chevron-right"></ha-icon></button>`
+        : "";
       overlay = `<div class="overlay settings${fresh}">
           <div class="o-head"><span>Odczyty</span><button class="close" data-action="close" aria-label="Wróć">
             <ha-icon icon="mdi:close"></ha-icon></button></div>
-          <div class="rows">${rows}</div>
+          <div class="rows">${scheduleRow}${rows}</div>
           ${powerSt ? `<button class="power${this._confirmOff ? " confirm" : ""}" data-action="power">
               ${powered ? (this._confirmOff ? "Dotknij ponownie, aby wyłączyć" : "Wyłącz centralę") : "Włącz centralę"}</button>` : ""}
         </div>`;
@@ -827,6 +1071,33 @@ const STYLE = `
   .home ha-icon { --mdc-icon-size: 30px; }
   .home:hover { background: #f3f5f6; }
   .banner { margin-top: 12px; padding: 8px 10px; border-radius: 6px; background: #fdeced; color: #8f1d22; font-size: .9rem; }
+
+  .overlay.schedule { overflow: auto; gap: 10px; }
+  .s-seasons { display: flex; gap: 6px; }
+  .s-days { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { min-width: 40px; padding: 6px 8px; border-radius: 16px; border: 1.5px solid var(--ap-rule); text-align: center; font-size: .9rem; }
+  .chip.on { border-color: var(--ap-accent); background: var(--ap-accent); color: #fff; font-weight: 500; }
+  .s-list { display: flex; flex-direction: column; }
+  .s-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--ap-rule); }
+  .s-row > :last-child { margin-left: auto; }
+  .s-row input { font: inherit; color: inherit; background: none; border: 1px solid var(--ap-rule); border-radius: 6px; padding: 4px 6px; }
+  .s-row input:focus-visible { outline: 2px solid var(--ap-accent); outline-offset: 1px; }
+  .s-num { display: inline-flex; align-items: center; gap: 3px; }
+  .s-num input { width: 4.2em; text-align: right; }
+  .s-check { display: inline-flex; align-items: center; gap: 6px; }
+  .s-check input { width: 18px; height: 18px; accent-color: var(--ap-accent); }
+  .s-del { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; }
+  .s-del:hover { background: #f3f5f6; }
+  .s-del ha-icon { --mdc-icon-size: 20px; }
+  .s-add { padding: 8px 0; text-align: left; color: var(--ap-accent); font-weight: 500; border-bottom: 1px solid var(--ap-rule); }
+  .readonly input { pointer-events: none; border-color: transparent; }
+  .s-status { min-height: 1.3em; }
+  .s-error { color: var(--ap-alarm); }
+  .s-empty { margin-top: 12px; text-align: left; }
+  .s-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: auto; }
+  .s-btn { padding: 8px 18px; border: 1.5px solid var(--ap-ink); border-radius: 8px; }
+  .s-btn.primary { background: var(--ap-accent); border-color: var(--ap-accent); color: #fff; font-weight: 500; }
+  .s-btn:disabled { opacity: .35; cursor: default; }
   code { font-size: .85em; }
 
   @container (max-width: 430px) {
