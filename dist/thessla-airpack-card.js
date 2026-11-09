@@ -7,7 +7,7 @@
  * Not affiliated with Thessla Green; no manufacturer logo, wordmark or artwork is used.
  */
 
-const CARD_VERSION = "2.4.0";
+const CARD_VERSION = "2.4.1";
 
 // key: [domains, candidate entity names (friendly-name suffixes)]
 const ENTITY_KEYS = {
@@ -433,7 +433,8 @@ class ThesslaAirpackCard extends HTMLElement {
   _scheduleOpen() {
     const winter = /zim/i.test((this._st("season") || {}).state || "");
     const today = (new Date().getDay() + 6) % 7; // Monday = 0
-    this._sch = { season: winter ? 1 : 0, days: [today], draft: null, dirty: false, sent: null, error: null };
+    // day: the day shown and edited; copy: other days that get the same plan on save.
+    this._sch = { season: winter ? 1 : 0, day: today, copy: [], draft: null, dirty: false, sent: null, error: null };
     this._ssig = null;
     this._openView("schedule");
   }
@@ -465,7 +466,7 @@ class ThesslaAirpackCard extends HTMLElement {
     const slots = [...sch.draft.slots].sort((a, b) => a.start.localeCompare(b.start));
     const tokens = slots.map((s) => (withTemp ? `${s.start}/${s.pct}/${s.temp}` : `${s.start}/${s.pct}`));
     while (tokens.length < 4) tokens.push("-");
-    const days = [...sch.days].sort().map((d) => d + 1).join("");
+    const days = [sch.day, ...sch.copy].sort().map((d) => d + 1).join("");
     const command = `${sch.season ? "Z" : "L"}${days} ${tokens.join(" ")} ${sch.draft.airing || "-"}`;
     sch.draft.slots = slots;
     sch.sent = command;
@@ -477,17 +478,36 @@ class ThesslaAirpackCard extends HTMLElement {
     const sch = this._sch;
     if (!sch) return;
     const draft = sch.draft;
+    // Leaving a day or season with unsaved edits needs a second tap, like closing the screen.
+    const guard = (key) => {
+      if (!sch.dirty || sch.confirmClose === key) return true;
+      sch.confirmClose = key;
+      sch.error = "Niezapisane zmiany – dotknij ponownie, aby je porzucić.";
+      this._render();
+      return false;
+    };
     switch (action) {
       case "sch-season":
+        if (Number(arg) === sch.season || !guard(`season${arg}`)) return;
         sch.season = Number(arg);
         sch.dirty = sch.done = sch.confirmClose = false;
         sch.sent = sch.error = null;
         break;
       case "sch-day": {
         const d = Number(arg);
-        const i = sch.days.indexOf(d);
-        if (i >= 0 && sch.days.length > 1) sch.days.splice(i, 1);
-        else if (i < 0) sch.days.push(d);
+        if (d === sch.day || !guard(`day${d}`)) return;
+        sch.day = d;
+        sch.copy = sch.copy.filter((x) => x !== d);
+        sch.dirty = sch.done = sch.confirmClose = false;
+        sch.sent = sch.error = null;
+        break;
+      }
+      case "sch-copy": {
+        const d = Number(arg);
+        if (d === sch.day) return;
+        sch.copy = sch.copy.includes(d) ? sch.copy.filter((x) => x !== d) : [...sch.copy, d];
+        sch.done = false;
+        sch.sent = sch.error = null;
         break;
       }
       case "sch-add": {
@@ -505,6 +525,7 @@ class ThesslaAirpackCard extends HTMLElement {
         break;
       case "sch-reset":
         sch.dirty = sch.done = sch.confirmClose = false;
+        sch.copy = [];
         sch.sent = sch.error = null;
         break;
       case "sch-save":
@@ -546,15 +567,19 @@ class ThesslaAirpackCard extends HTMLElement {
       sch.dirty = false; // the component mirrors the write at once; show what the unit holds
       sch.done = true;
       sch.sent = null;
+      sch.copy = [];
     }
-    if (!sch.dirty) sch.draft = raw ? this._scheduleDay(raw, Math.min(...sch.days)) : null;
+    if (!sch.dirty) sch.draft = raw ? this._scheduleDay(raw, sch.day) : null;
 
     const seasons = ["Lato", "Zima"]
       .map((label, i) => `<button class="fn${sch.season === i ? " active" : ""}" data-action="sch-season" data-arg="${i}"
           aria-pressed="${sch.season === i}">${label}</button>`)
       .join("");
-    const days = SCHEDULE_DAYS.map((d, i) => `<button class="chip${sch.days.includes(i) ? " on" : ""}" data-action="sch-day"
-        data-arg="${i}" aria-pressed="${sch.days.includes(i)}">${d}</button>`).join("");
+    const days = SCHEDULE_DAYS.map((d, i) => `<button class="chip${sch.day === i ? " on" : ""}" data-action="sch-day"
+        data-arg="${i}" aria-pressed="${sch.day === i}">${d}</button>`).join("");
+    const copy = SCHEDULE_DAYS.map((d, i) => i === sch.day ? "" : `<button class="chip small${sch.copy.includes(i) ? " on" : ""}"
+        data-action="sch-copy" data-arg="${i}" aria-pressed="${sch.copy.includes(i)}">${d}</button>`).join("");
+    const copyNames = sch.copy.slice().sort().map((i) => SCHEDULE_DAYS[i]).join(", ");
 
     let body;
     if (!sch.draft) {
@@ -579,17 +604,18 @@ class ThesslaAirpackCard extends HTMLElement {
       if (sch.error) status = `<span class="s-error">${esc(sch.error)}</span>`;
       else if (sch.sent && cmdSt && /^Błąd/.test(cmdSt.state)) status = `<span class="s-error">${esc(cmdSt.state)}</span>`;
       else if (sch.sent) status = "Zapisuję…";
-      else if (sch.dirty && sch.days.length > 1) status = `Zapis obejmie ${sch.days.length} zaznaczone dni.`;
+      else if (sch.copy.length) status = `Plan dnia ${SCHEDULE_DAYS[sch.day]} zostanie zapisany także na: ${copyNames}.`;
       else if (sch.dirty) status = "Niezapisane zmiany.";
       else if (sch.done) status = "Zapisano.";
-      else if (sch.days.length > 1) status = "Pokazany pierwszy zaznaczony dzień.";
+      const pending = sch.dirty || sch.copy.length > 0;
       body = `<div class="s-list${canWrite ? "" : " readonly"}">${rows}
           ${canWrite && d.slots.length < 4 ? `<button class="s-add" data-action="sch-add">+ Dodaj odcinek</button>` : ""}
           ${airing}</div>
+        ${canWrite ? `<div class="s-copy"><span>Zapisz także na:</span>${copy}</div>` : ""}
         <div class="hint s-status">${status}</div>
         ${canWrite ? `<div class="s-actions">
-            <button class="s-btn" data-action="sch-reset" ${sch.dirty ? "" : "disabled"}>Cofnij</button>
-            <button class="s-btn primary" data-action="sch-save" ${sch.dirty && !sch.sent ? "" : "disabled"}>Zapisz</button>
+            <button class="s-btn" data-action="sch-reset" ${pending ? "" : "disabled"}>Cofnij</button>
+            <button class="s-btn primary" data-action="sch-save" ${pending && !sch.sent ? "" : "disabled"}>Zapisz</button>
           </div>` : `<div class="hint">Brak encji „Harmonogram – zapis”: podgląd bez możliwości zmian.</div>`}`;
     }
     return `<div class="overlay schedule${fresh}">
@@ -621,6 +647,7 @@ class ThesslaAirpackCard extends HTMLElement {
         break;
       case "sch-season":
       case "sch-day":
+      case "sch-copy":
       case "sch-add":
       case "sch-del":
       case "sch-reset":
@@ -628,8 +655,8 @@ class ThesslaAirpackCard extends HTMLElement {
         this._scheduleAction(action, arg);
         break;
       case "close":
-        if (this._view === "schedule" && this._sch && this._sch.dirty && !this._sch.confirmClose) {
-          this._sch.confirmClose = true;
+        if (this._view === "schedule" && this._sch && this._sch.dirty && this._sch.confirmClose !== "close") {
+          this._sch.confirmClose = "close";
           this._sch.error = "Niezapisane zmiany – dotknij ✕ ponownie, aby je porzucić.";
           this._render();
           return;
@@ -1077,6 +1104,8 @@ const STYLE = `
   .s-days { display: flex; gap: 6px; flex-wrap: wrap; }
   .chip { min-width: 40px; padding: 6px 8px; border-radius: 16px; border: 1.5px solid var(--ap-rule); text-align: center; font-size: .9rem; }
   .chip.on { border-color: var(--ap-accent); background: var(--ap-accent); color: #fff; font-weight: 500; }
+  .chip.small { min-width: 34px; padding: 3px 6px; font-size: .85rem; }
+  .s-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: .9rem; color: var(--ap-muted); }
   .s-list { display: flex; flex-direction: column; }
   .s-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--ap-rule); }
   .s-row > :last-child { margin-left: auto; }

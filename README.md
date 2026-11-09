@@ -82,7 +82,8 @@ przypisz ją ręcznie w `entities`.
   intensywnością i przepływem wentylatorów oraz sprawnością odzysku ciepła.
 - **Koło zębate**: wszystkie odczyty i wyłącznik centrali (wyłączenie wymaga drugiego dotknięcia).
 - **Harmonogram trybu AUTO** (w odczytach): jak w panelu Air++ – sezon Lato/Zima, dzień, do 4 odcinków
-  z godziną startu i intensywnością oraz godzina wietrzenia. Zaznaczenie kilku dni zapisuje na nie ten sam plan.
+  z godziną startu i intensywnością oraz godzina wietrzenia. Każdy dzień ma własny plan; „Zapisz także na:”
+  kopiuje plan edytowanego dnia na wybrane inne dni.
   Wymaga esphome-thessla-airpack 1.2.0 lub nowszego z encjami `schedule_summer`, `schedule_winter`
   i `schedule_command`.
 - U góry pojawiają się kody aktywnych stanów: BP, GWC, FPX, ERV, OKAP, H2O, JP oraz alarmy S i E.
