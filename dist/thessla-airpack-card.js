@@ -7,7 +7,7 @@
  * Not affiliated with Thessla Green; no manufacturer logo, wordmark or artwork is used.
  */
 
-const CARD_VERSION = "2.2.0";
+const CARD_VERSION = "2.2.1";
 
 // key: [domains, candidate entity names (friendly-name suffixes)]
 const ENTITY_KEYS = {
@@ -308,6 +308,12 @@ class ThesslaAirpackCard extends HTMLElement {
     }, ms);
   }
 
+  // The supply setpoint is used only in KOMFORT; in EKO the unit does not regulate supply temperature.
+  _setpointEditable() {
+    const comfortSt = this._st("comfort");
+    return !unavailable(comfortSt) && /komfort/i.test(comfortSt.state) && !unavailable(this._st("setpoint"));
+  }
+
   _changeSetpoint(dir) {
     const st = this._st("setpoint");
     if (unavailable(st)) return;
@@ -379,7 +385,7 @@ class ThesslaAirpackCard extends HTMLElement {
     if (this._view) this._armViewTimer();
     switch (action) {
       case "open":
-        if (arg === "temperature" && unavailable(this._st("setpoint"))) {
+        if (arg === "temperature" && !this._setpointEditable()) {
           this._moreInfo("supply");
           return;
         }
@@ -396,6 +402,7 @@ class ThesslaAirpackCard extends HTMLElement {
         this._changeIntensity(Number(arg));
         break;
       case "setpoint":
+        if (!this._setpointEditable()) return;
         this._adjustSetpoint(Number(arg));
         break;
       case "mode": {
@@ -569,9 +576,11 @@ class ThesslaAirpackCard extends HTMLElement {
     if (this._view === "intensity") {
       overlay = this._adjustScreen(fresh, "Intensywność wentylacji", intensity === null ? "–" : String(intensity), "%",
         "intensity", kind === "manual" ? "Nastawa trybu manualnego" : "Zmiana uruchomi tryb chwilowy", flow ? `${flow} m³/h` : "");
+    } else if (this._view === "temperature" && !showSetpoint) {
+      this._view = null;
     } else if (this._view === "temperature") {
       overlay = this._adjustScreen(fresh, "Temperatura nawiewu", temperature ?? "–", "°C", "setpoint",
-        kind === "manual" ? "Nastawa trybu manualnego" : "Zmiana uruchomi tryb chwilowy", "");
+        "Nastawa trybu KOMFORT", "");
     } else if (this._view === "flow") {
       overlay = this._flowScreen(fresh);
     } else if (this._view === "settings") {
